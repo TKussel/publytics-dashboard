@@ -25,8 +25,7 @@ from datetime import datetime
 from search_terms import affiliation_matches, dzg_terms
 
 
-# All progress output goes through the logging module so the verbosity can be changed
-# in one place and messages carry a timestamp and severity level
+# All progress output goes through the logging module
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(message)s",
@@ -36,8 +35,7 @@ log = logging.getLogger(Path(__file__).stem)
 
 
 # Paths resolve relative to this script, so the project runs from any location.
-# The scripts and the YAML config sit in the repository root, the data subfolder
-# holds every CSV and is created on first run.
+# The data subfolder holds every CSV and is created on first run.
 CODE_DIR = Path(__file__).resolve().parent
 DATA_DIR = CODE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -65,6 +63,77 @@ def load_yaml(path: Path) -> dict:
     """Load and return a YAML file as a dictionary."""
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def author_initials(last_name: str, initials: str) -> str:
+    """Build the initials a publisher would use to tag an author, letters only.
+
+    Michael Johann Meier becomes MJM, van der Berg becomes plus one letter per part of the
+    last name. Dots and spaces are dropped so that M.J.M., MJM and M. J. M. compare equal.
+    """
+    first = re.sub(r"[^A-Za-zÄÖÜäöüß]", "", str(initials or "")).upper()
+    last  = "".join(part[0] for part in re.split(r"[-\s]+", str(last_name or "")) if part).upper()
+    return first + last
+
+
+def tagged_affiliations(text: str) -> dict[str, list[str]]:
+    """Split a combined affiliation block into its parts and read the initials tag of each. """
+    result: dict[str, list[str]] = {}
+    for part in re.split(r"[;|]", str(text or "")):
+        part = part.strip()
+        bracket = re.search(r"\(([^()]*)\)\s*\.?\s*$", part)
+        if not bracket:
+            continue
+        plain = re.sub(r"\s*\([^()]*\)\s*\.?\s*$", "", part).strip(" ,.")
+        if not plain:
+            continue
+        for name in bracket.group(1).split(","):
+            key = re.sub(r"[^A-Za-zÄÖÜäöüß]", "", name).upper()
+            if key:
+                result.setdefault(key, []).append(plain)
+    return result
+
+
+def spread_first_author_affiliation(df_authors: pd.DataFrame) -> pd.DataFrame:
+    """Give co-authors their own affiliation when only the first author carries the block.
+
+    Some publishers list every affiliation of a paper on the first author and mark each one
+    with the initials of the author it belongs to. Everyone else is then left without an
+    affiliation, which would drop them from the site assignment. Where the initials match,
+    the matching part is written to that author.
+    """
+    df = df_authors.copy()
+    df["affiliation"] = df["affiliation"].fillna("")
+
+    filled = trimmed = 0
+    for pmid, group in df.groupby("pmid", sort=False):
+        first = group[group["author_position"] == 1]
+        if first.empty:
+            continue
+        by_initials = tagged_affiliations(first.iloc[0]["affiliation"])
+        if not by_initials:
+            continue
+
+        for index, row in group.iterrows():
+            if row["author_position"] == 1 or str(row["affiliation"]).strip():
+                continue
+            parts = by_initials.get(author_initials(row["last_name"], row["initials"]))
+            if parts:
+                df.at[index, "affiliation"] = " | ".join(parts)
+                filled += 1
+
+        # The first author holds the whole block and would otherwise count for every site
+        # in it. Their own parts are kept, but only when their tag really occurs.
+        own = by_initials.get(author_initials(first.iloc[0]["last_name"],
+                                              first.iloc[0]["initials"]))
+        if own:
+            df.at[first.index[0], "affiliation"] = " | ".join(own)
+            trimmed += 1
+
+    if filled or trimmed:
+        log.info("Affiliation block of the first author split up: %s co-authors filled, "
+                 "%s first authors reduced to their own part", f"{filled:,}", f"{trimmed:,}")
+    return df
 
 
 def dzg_affiliation_articles(df_authors: pd.DataFrame, config: dict) -> pd.DataFrame:
@@ -106,13 +175,7 @@ def mark_first_last_author(df_authors: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_author_key(df_authors: pd.DataFrame) -> pd.DataFrame:
-    """Add a column that identifies an author by last name and initials.
-
-    PubMed carries no reliable author identifier, so the name is the only handle. Two
-    people with the same name therefore share a key, and one person gets two keys when a
-    publisher abbreviates the name differently. Writing the key into the file makes the
-    grouping visible and lets it be checked against the rows it came from.
-    """
+    """Add a column that identifies an author by last name and initials. """
     df = df_authors.copy()
     df["author_key"] = (df["last_name"].fillna("").str.strip().str.casefold() + "|"
                         + df["initials"].fillna("").str.strip().str.casefold())
@@ -171,8 +234,7 @@ async def icite_batch(session: aiohttp.ClientSession,
                 else:
                     await asyncio.sleep(2 ** attempt)
 
-    # Reached when every attempt ran into the rate limit. Without this line the batch
-    # would disappear silently and the missing citations would be hard to notice.
+    # Reached when every attempt ran into the rate limit. 
     log.warning(f"iCite kept rate limiting a batch of {len(pmid_list)} PMIDs, giving up on it")
     return {}
 
@@ -328,7 +390,7 @@ def match_sjr(df_articles: pd.DataFrame, sjr_data: pd.DataFrame) -> pd.DataFrame
 
 
 def load_mesh_stoplist(path: Path) -> set[str]:
-    """Load MeSH stoplist from YAML and return all terms as a flat set; returns empty set if file is missing."""
+    """Load MeSH stoplist from YAML and return all terms as a flat set."""
     if not path.exists():
         log.warning("mesh_stoplist.yaml not found at %s, no terms will be filtered", path)
         return set()
@@ -342,7 +404,7 @@ def load_mesh_stoplist(path: Path) -> set[str]:
 
 
 def build_mesh_long(df_articles: pd.DataFrame) -> pd.DataFrame:
-    """Explode the semicolon-separated mesh_descriptor column into one row per article × MeSH term."""
+    """Explode the semicolon-separated mesh_descriptor column into one row per article x MeSH term."""
     if "mesh_descriptor" not in df_articles.columns:
         return pd.DataFrame(columns=["pmid", "publication_year", "mesh_term"])
     mesh = (
@@ -396,6 +458,9 @@ if __name__ == "__main__":
 
     if "article_title" in df_articles.columns:
         df_articles["article_title"] = strip_html_tags(df_articles["article_title"])
+
+    df_authors["author_position"] = pd.to_numeric(df_authors["author_position"], errors="coerce")
+    df_authors = spread_first_author_affiliation(df_authors)
 
     log.info("Step 1: DZG affiliation at article level")
     df_dzg_articles = dzg_affiliation_articles(df_authors, config)

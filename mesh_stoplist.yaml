@@ -1,6 +1,6 @@
 # MeSH Term Stoplist
-# Terms listed here are hidden by default in the MeSH Terms tab of the dashboard.
-# The filter can be toggled off via checkbox to see all terms.
+# Terms listed here are removed from the MeSH Terms tab and the author search.
+# They carry no thematic information.
 #
 # Categories:
 #   demographic    

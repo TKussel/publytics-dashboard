@@ -20,8 +20,7 @@ from Bio import Entrez
 from search_terms import build_query
 
 
-# All progress output goes through the logging module so the verbosity can be changed
-# in one place and messages carry a timestamp and severity level
+# All progress output goes through the logging module 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(message)s",
@@ -43,8 +42,7 @@ SLEEP_SECONDS   = 0.4   # delay between fetches
 
 
 # Paths resolve relative to this script, so the project runs from any location.
-# The scripts and the YAML config sit in the repository root, the data subfolder
-# holds every CSV and is created on first run.
+# The data subfolder holds every CSV and is created on first run.
 CODE_DIR = Path(__file__).resolve().parent
 DATA_DIR = CODE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -197,8 +195,7 @@ def parse_article(raw: dict) -> dict | None:
         pub_type_texts.append(str(pt))
         pub_type_uis.append(xml_attribute(pt, "UI"))
 
-    # Electronic publication date. Only the first entry is used, further ones repeat the
-    # same publication in another format.
+    # Electronic publication date.
     article_date      = ""
     article_date_year = ""
     article_dates     = art.get("ArticleDate", [])
@@ -307,7 +304,7 @@ if __name__ == "__main__":
 
     raw_config = load_yaml(YAML_PATH)
 
-    # Respect active_dzg setting – only extract data for the configured DZG
+    # Only extract data for the configured DZG
     raw_config.pop("colors", None)
     active_dzg = raw_config.pop("active_dzg", None)
     if active_dzg:

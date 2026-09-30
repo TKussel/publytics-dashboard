@@ -2,23 +2,14 @@
 # Structure: DZG -> Network/Location -> List of Search Terms
 # 'general' = parent search for the entire DZG
 #
-# A term is matched as written, anywhere in the affiliation and ignoring case.
-# Two markers at the start of a term change that:
-#
-#   {noorder}   every word after the marker has to appear somewhere in the affiliation,
-#               in any order.
-#
-#   {nosearch}  the term is not used for searching in PubMed and only assigns the site during
-#               preprocessing. Use it for wording that is too general to search on.
-#
-# The markers can be combined
-#
 # active_dzg: set to the DZG key you want to extract, prepare and display.
 # Only this DZG's data will be downloaded, processed and shown in the dashboard.
 
 active_dzg: DZL
 
 # Colours used across the dashboard.
+# dzg   : one colour per DZG, used for the co-affiliation chart.
+# sites : one colour per site, grouped by the DZG the site belongs to.
 # Any DZG or site left out here falls back to a built-in palette, assigned in
 # alphabetical order so the same name always keeps the same colour.
 colors:
@@ -38,6 +29,15 @@ colors:
       UGMLC:  "#9b7cf5"   # purple
       TLRC:   "#4f8ef7"   # blue
       CPC-M:  "#3ecfaa"   # turquoise
+    DZHK:
+      NORTH:                "#f5a623"   # orange
+      MUNICH:               "#8fcc3a"   # green
+      LOWER SAXONY:         "#9b7cf5"   # purple
+      RHINE-MAIN:           "#4f8ef7"   # blue
+      BERLIN:               "#3ecfaa"   # turquoise
+      HEIDELBERG/MANNHEIM:  "#f0c040"   # yellow
+
+
 
 
 DZIF:
@@ -83,7 +83,23 @@ DZHK:
     - "German Centre for Cardiovascular Research"
     - "German Centre of Cardiovascular Research"
     - "Deutsches Zentrum für Herz-Kreislauf-Forschung"
+    - "Deutsches Zentrum für Herz-Kreislauf Forschung"
+    - "Deutsches Zentrum für Herzkreislauf Forschung"
+    - "Deutsches Zentrum für Herz und Kreislauf Forschung"
+    - "Deutsches Zentrum für Herz Kreislauf Forschung"
     - "DZHK"
+  NORTH:
+    - '{regex} (?:Partner[- ]?site|Partnerside|Partner side|Patner[- ]?side|Standort|sites|site)[\s,;:/]+(?:Greifswald|Hamburg|Kiel|Lübeck|Luebeck|HH|UKSH|KI|HL|North|Nord)'
+  BERLIN:
+    - '{regex} (?:Partner[- ]?site|Partnerside|Partner side|Patner[- ]?side|Standort|sites|site)[\s,;:/]+(?:Berlin)'
+  MUNICH:
+    - '{regex} (?:Partner[- ]?site|Partnerside|Partner side|Patner[- ]?side|Standort|sites|site)[\s,;:/]+(?:München|Munich|Muenchen|Munic)'
+  RHINE-MAIN:
+    - '{regex} (?:Partner[- ]?site|Partnerside|Partner side|Patner[- ]?side|Standort|sites|site)[\s,;:/]+(?:Frankfurt|Mainz|Bad Nauheim|Rhine[- ]?Main|Rhein[- ]?Main)'
+  HEIDELBERG/MANNHEIM:
+    - '{regex} (?:Partner[- ]?site|Partnerside|Partner side|Patner[- ]?side|Standort|sites|site)[\s,;:/]+(?:Heidelberg|Mannheim|HD/MA|MA/HD)'
+  LOWER SAXONY:
+    - '{regex} (?:Partner[- ]?site|Partnerside|Partner side|Patner[- ]?side|Standort|sites|site)[\s,;:/]+(?:Göttingen|Goettingen|Lower Saxony)'
 
 DKTK:
   general:

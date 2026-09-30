@@ -23,8 +23,7 @@ from pathlib import Path
 
 matplotlib.use("Agg")
 
-# Progress and problems are logged rather than printed so they appear in the terminal
-# that runs Streamlit, where print output from cached functions is easy to miss
+# Progress and problems are logged
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(message)s",
@@ -42,8 +41,7 @@ for _loc in ("en_US.UTF-8", "en_US", "English_United States.1252", "English"):
 
 
 # Paths resolve relative to this script, so the project runs from any location.
-# The scripts and the YAML config sit in the repository root, the data subfolder
-# holds every CSV and is created on first run.
+# The data subfolder holds every CSV and is created on first run.
 CODE_DIR = Path(__file__).resolve().parent
 DATA_DIR = CODE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,18 +59,30 @@ DZG_COLUMNS = ["DZIF", "DZNE", "DZPG", "DZKJ", "DZHK", "DKTK", "DZL", "DZD"]
 DZG_COLORS: dict[str, str]  = {}
 SITE_COLORS: dict[str, str] = {}
 
-BG      = "#0f1117"
-SURFACE = "#1a1d27"
-BORDER  = "#2a2d3e"
 BLUE    = "#4f8ef7"
 ORANGE  = "#f5a623"
 PURPLE  = "#9b7cf5"
 GREEN   = "#3ecfaa"
-MUTED   = "#8b8fa8"
-TEXT    = "#e8eaf0"
 
-# Fixed mapping from best to lowest journal quartile. SCImago writes "-" for journals it
-# ranks without assigning a quartile, which is relabelled for display only.
+# Neutral colours for cards and charts, one set per theme.
+PALETTES = {
+    "dark": {
+        "SURFACE": "#1a1d27", "BORDER": "#2a2d3e", "MUTED": "#8b8fa8", "TEXT": "#e8eaf0",
+        "HEATMAP": [[0, "#4a1010"], [0.5, "#c0392b"], [1, "#ff6b6b"]],
+    },
+    "light": {
+        "SURFACE": "#f5f6f9", "BORDER": "#dfe2e8", "MUTED": "#5f6475", "TEXT": "#1a1d27",
+        "HEATMAP": [[0, "#fde2df"], [0.5, "#f5a39a"], [1, "#e05a4c"]],
+    },
+}
+
+THEME   = PALETTES.get(st.context.theme.type or "dark", PALETTES["dark"])
+SURFACE = THEME["SURFACE"]
+BORDER  = THEME["BORDER"]
+MUTED   = THEME["MUTED"]
+TEXT    = THEME["TEXT"]
+
+# mapping from best to lowest journal quartile
 QUARTILE_COLORS = {"Q1": GREEN, "Q2": BLUE, "Q3": ORANGE, "Q4": "#e8534f"}
 QUARTILE_ORDER  = ["Q1", "Q2", "Q3", "Q4"]
 NO_QUARTILE_LABEL = "No quartile"
@@ -80,14 +90,14 @@ NO_QUARTILE_LABEL = "No quartile"
 # Site filter options that are not an actual site name
 SITE_ALL  = "All"
 SITE_NONE = "No Sites"
+MAX_VENN_SITES = 5   # above this the sets overlap too much to be readable
 
-# Used for categories with no colour configured in the YAML, and for charts whose
-# categories are not named entities (for example "1 Site", "2 Sites")
+# Used for categories with no colour configured in the YAML
 FALLBACK_PALETTE = [BLUE, GREEN, ORANGE, PURPLE, "#e05c8a", "#e8534f", "#8fcc3a", "#f0c040"]
 
 
 def plot_layout(**kwargs) -> dict:
-    """Return a base Plotly layout dict with consistent dark-theme styling; extra kwargs are merged in."""
+    """Return a base Plotly layout in the active palette, extra keyword arguments are merged in."""
     base = dict(
         paper_bgcolor=SURFACE,
         plot_bgcolor=SURFACE,
@@ -124,10 +134,6 @@ st.set_page_config(
 
 st.markdown(f"""
 <style>
-    .stApp {{ background-color: {BG}; }}
-    section[data-testid="stSidebar"] {{
-        background-color: {SURFACE}; border-right: 1px solid {BORDER};
-    }}
     .metric-card {{
         background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 8px;
         padding: 18px 20px;
@@ -139,10 +145,10 @@ st.markdown(f"""
     .metric-value {{ color: {TEXT}; font-size: 26px; font-weight: 700; }}
     .metric-sub   {{ color: {MUTED}; font-size: 11px; margin-top: 2px; }}
     .section-label {{
-        color: {MUTED}; font-size: 10px; text-transform: uppercase;
+        opacity: 0.75; font-size: 10px; text-transform: uppercase;
         letter-spacing: 0.1em; margin-bottom: 4px;
     }}
-    .data-note {{ color: {MUTED}; font-size: 10px; font-style: italic; margin-top: 4px; }}
+    .data-note {{ opacity: 0.75; font-size: 10px; font-style: italic; margin-top: 4px; }}
     /* Streamlit's built-in top-right "running man" indicator cycles through a fixed set of
        icons (several are sports emoji) that isn't officially configurable, so it's hidden
        here instead; the existing st.spinner below still gives loading feedback. */
@@ -183,6 +189,30 @@ def table_column_config(df: pd.DataFrame) -> dict:
         elif col in ("rcr", "sjr"):
             config[col] = st.column_config.NumberColumn(col, format="%.2f")
     return config
+
+
+def raw_column_order(df: pd.DataFrame, table: str, dzg: str) -> list[str] | None:
+    """Order the raw data columns so the most useful ones come first. """
+    if table == "Publications":
+        affiliation = [dzg] + sorted(get_site_columns(df, dzg)) + [d for d in DZG_COLUMNS if d != dzg]
+        front = (["article_date", "journal_iso_abbr", "publication_type", "article_title",
+                  "cited_by_count", "pubmed_url", "n_authors", "n_dzg_authors"]
+                 + affiliation
+                 + ["rcr", "sjr", "sjr_quartile", "language", "mesh_descriptor"])
+        hidden = {"url", "mesh_major_topic_yn", "medline_status", "doi", "issn",
+                  "publication_type_ui", "publication_year"}
+        back = []
+    elif table == "Authors":
+        front, hidden = [], set()
+        back = ["collective_name", "author_identifier", "author_identifier_source",
+                "affiliation_identifier", "affiliation_identifier_source"]
+    else:
+        return None
+
+    front = [c for c in front if c in df.columns]
+    back  = [c for c in back if c in df.columns]
+    rest  = [c for c in df.columns if c not in front and c not in back and c not in hidden]
+    return front + rest + back
 
 
 def filter_table(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
@@ -229,11 +259,7 @@ def data_note(text: str) -> None:
 
 
 def info_box(title: str, body_html: str) -> None:
-    """Render a bordered explanatory box above a section.
-
-    Leading indentation is stripped from every line because Markdown treats four or more
-    leading spaces as a code block, which would print the raw HTML instead of rendering it.
-    """
+    """Render a bordered explanatory box above a section. """
     body = " ".join(line.strip() for line in body_html.strip().splitlines())
     html = (
         f'<div style="background:{SURFACE};border:1px solid {BORDER};border-radius:8px;'
@@ -293,18 +319,14 @@ def resolve_colors(names: list[str], configured: dict) -> dict[str, str]:
 
 @st.cache_data
 def load_last_update(path: Path) -> str:
-    """Return the timestamp of the most recent pipeline run.
-
-    The file is read line by line instead of as a table, because the pipeline appends to it
-    over time and rows written by an older version can carry fewer columns than the header.
-    """
+    """Return the timestamp of the most recent pipeline run. """
     try:
         rows = [line for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
     except OSError as error:
         log.warning("Could not read %s: %s", path.name, error)
         return "unknown"
 
-    if len(rows) < 2:          # only the header, no run recorded yet
+    if len(rows) < 2:          
         return "unknown"
     return rows[-1].split(";")[0]
 
@@ -330,7 +352,6 @@ def load_data():
     df_articles = pd.read_csv(CSV_ARTICLES, sep=";", dtype=str, encoding="utf-8-sig", low_memory=False)
     df_authors  = pd.read_csv(CSV_AUTHORS,  sep=";", dtype=str, encoding="utf-8-sig", low_memory=False)
 
-    # pubmed_mesh.csv is optional, it may not exist if the pipeline has not been re-run yet
     try:
         df_mesh = pd.read_csv(CSV_MESH, sep=";", dtype=str, encoding="utf-8-sig", low_memory=False)
     except FileNotFoundError:
@@ -344,8 +365,6 @@ def load_data():
     if "author_position" in df_authors.columns:
         df_authors["author_position"] = pd.to_numeric(df_authors["author_position"], errors="coerce")
 
-    # The pipeline writes the flags as True/False text. Turning them into real booleans
-    # here means every later check can use the column directly instead of comparing values.
     TRUE_FALSE = {"True": True, "False": False, True: True, False: False}
     flag_columns = ["is_first_author", "is_last_author"] + DZG_COLUMNS
     for df in (df_articles, df_authors):
@@ -396,14 +415,25 @@ def get_site_columns(df: pd.DataFrame, dzg: str) -> list[str]:
     return [column for column in df.columns if column.startswith(f"{dzg}_")]
 
 
-def use_year_axis(fig: go.Figure) -> go.Figure:
-    """Draw the x axis as one sorted category per year.
+def reset_filters(year_min: int, year_max: int) -> None:
+    """Restore the sidebar filters to their defaults, called by the reset button."""
+    st.session_state["site_filter"] = SITE_ALL
+    st.session_state["year_filter"] = (year_min, year_max)
 
-    A category axis avoids decimal tick labels such as 2020.5 when only one or two years
-    are selected. Plotly otherwise arranges categories by first appearance, which in a
-    stacked chart depends on the order the traces were added and puts years out of
-    sequence, so the order is stated explicitly.
-    """
+
+def show_chart(fig: go.Figure) -> None:
+    """Draw a Plotly chart entirely in the dashboard palette. """
+    title = fig.layout.title.text
+    if title and not title.startswith("<b>"):
+        fig.update_layout(title_text=f"<b>{title}</b>")
+    fig.update_layout(title_x=0.01, title_xanchor="left")
+    fig.update_xaxes(automargin=True)
+    fig.update_yaxes(automargin=True)
+    st.plotly_chart(fig, width="stretch", theme=None)
+
+
+def use_year_axis(fig: go.Figure) -> go.Figure:
+    """Draw the x axis as one sorted category per year. """
     fig.update_xaxes(type="category", categoryorder="category ascending")
     return fig
 
@@ -418,37 +448,28 @@ def leadership_pmids(df_authors: pd.DataFrame, dzg: str) -> set:
 
 
 def authors_by_mesh(df_mesh: pd.DataFrame, df_authors: pd.DataFrame, df_articles: pd.DataFrame,
-                    terms: list[str], leading_only: bool) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+                    terms: list[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Find the authors who published on every selected MeSH term, plus their publications.
 
     The terms are combined per author, not per publication. Someone who covered one term in
-    one paper and another term in a second paper still counts.
+    one paper and another term in a second paper still counts, which is what a search for
+    expertise on a topic is after.
 
     Authors are grouped by the author_key column that preprocessing writes, which joins
-    last name and initials. Returns the author table, the publication table, and the pairs
-    of author and publication that connect the two, so the interface can narrow the
-    publications to one author.
+    last name and initials.
     """
     empty = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     if not terms or df_mesh.empty or df_authors.empty:
         return empty
 
-    if "author_key" not in df_authors.columns:
-        log.warning("The author file has no author_key column")
-        return empty
-
     authors = df_authors
-    if leading_only and {"is_first_author", "is_last_author"}.issubset(authors.columns):
-        authors = authors[authors["is_first_author"] | authors["is_last_author"]]
-    if authors.empty:
-        return empty
 
-    # One author has to appear under every single term, so the sets are intersected
+    pmids_by_term = {term: set(df_mesh.loc[df_mesh["mesh_term"] == term, "pmid"]) for term in terms}
+
     qualified = None
-    for term in terms:
-        term_pmids = set(df_mesh.loc[df_mesh["mesh_term"] == term, "pmid"])
-        term_keys  = set(authors.loc[authors["pmid"].isin(term_pmids), "author_key"])
-        qualified  = term_keys if qualified is None else qualified & term_keys
+    for term_pmids in pmids_by_term.values():
+        term_keys = set(authors.loc[authors["pmid"].isin(term_pmids), "author_key"])
+        qualified = term_keys if qualified is None else qualified & term_keys
     if not qualified:
         return empty
 
@@ -467,14 +488,28 @@ def authors_by_mesh(df_mesh: pd.DataFrame, df_authors: pd.DataFrame, df_articles
     grouped        = hits.groupby("author_key")
     leading_counts = hits[hits["leading"]].groupby("author_key")["pmid"].nunique()
 
-    summary = pd.DataFrame({
-        "Author":                  grouped["last_name"].first() + ", " + grouped["initials"].first(),
-        "Publications":            grouped["pmid"].nunique(),
-        "As first or last author": leading_counts.reindex(grouped.size().index).fillna(0).astype(int),
+    # Summed per distinct publication
+    citations = df_articles.set_index("pmid")["cited_by_count"]
+    per_paper = hits.drop_duplicates(["author_key", "pmid"])
+    citation_sums = per_paper["pmid"].map(citations).groupby(per_paper["author_key"]).sum()
+
+    author_index = grouped.size().index
+    columns = {
+        "Author":       grouped["last_name"].first() + ", " + grouped["initials"].first(),
+        "Publications": grouped["pmid"].nunique(),
+    }
+    # One column per selected term with the matching publications of each author
+    for term, term_pmids in pmids_by_term.items():
+        counts = per_paper[per_paper["pmid"].isin(term_pmids)].groupby("author_key")["pmid"].nunique()
+        columns[term] = counts.reindex(author_index).fillna(0).astype(int)
+    columns.update({
+        "Cumulative Citations":    citation_sums.astype(int),
+        "As first or last author": leading_counts.reindex(author_index).fillna(0).astype(int),
         "From":                    grouped["publication_year"].min(),
         "To":                      grouped["publication_year"].max(),
         "ORCID":                   grouped["author_identifier"].first(),
     })
+    summary = pd.DataFrame(columns)
     summary = (summary.sort_values("Publications", ascending=False)
                       .reset_index()
                       .rename(columns={"index": "author_key"}))
@@ -536,7 +571,7 @@ def fig_pubs_per_site_year(df: pd.DataFrame, site_columns: list[str]) -> go.Figu
         counts = df[df[col]].groupby("publication_year").size()
         rows += [{"publication_year": y, "site": site, "n": n} for y, n in counts.items()]
 
-    # Publications the DZG claims but no individual site does
+ 
     no_site = df[~df[site_columns].any(axis=1)].groupby("publication_year").size()
     rows += [{"publication_year": y, "site": SITE_NONE, "n": n} for y, n in no_site.items()]
 
@@ -569,15 +604,19 @@ def fig_pubs_per_site_year(df: pd.DataFrame, site_columns: list[str]) -> go.Figu
 
 
 def fig_citations_per_year(df: pd.DataFrame) -> go.Figure:
-    """Bar chart showing total citations grouped by the publication year of the cited articles."""
+    """Bar chart of the citations accumulated by the publications up to each year. """
     if not has_citations(df):
-        return empty_figure("Citations by Publication Year", "No citation data available")
-    per_year = df.groupby("publication_year")["cited_by_count"].sum().reset_index()
+        return empty_figure("Cumulative Citations by Publication Year", "No citation data available")
+
+    per_year = (df.groupby("publication_year")["cited_by_count"].sum()
+                  .sort_index()
+                  .cumsum()
+                  .reset_index())
     fig = go.Figure()
     fig.add_bar(x=per_year["publication_year"], y=per_year["cited_by_count"],
                 marker_color=PURPLE, marker_line_width=1, marker_line_color=SURFACE,
-                hovertemplate="<b>%{x}</b><br>Citations: %{y:,}<extra></extra>")
-    fig.update_layout(**plot_layout(title="Citations by Publication Year"))
+                hovertemplate="<b>up to %{x}</b><br>Citations: %{y:,}<extra></extra>")
+    fig.update_layout(**plot_layout(title="Cumulative Citations by Publication Year"))
     return use_year_axis(fig)
 
 
@@ -748,7 +787,7 @@ def fig_site_heatmap(df: pd.DataFrame, site_columns: list[str]) -> go.Figure:
         text=text,
         texttemplate="%{text}",
         textfont=dict(color=TEXT, size=11),
-        colorscale=[[0, "#4a1010"], [0.5, "#c0392b"], [1, "#ff6b6b"]],
+        colorscale=THEME["HEATMAP"],
         hovertemplate="<b>%{y} × %{x}</b><br>Shared publications: %{text}<extra></extra>",
         showscale=True,
         hoverongaps=False,
@@ -764,24 +803,131 @@ def fig_site_heatmap(df: pd.DataFrame, site_columns: list[str]) -> go.Figure:
     return fig
 
 
-def fig_site_venn(df: pd.DataFrame, site_columns: list[str]) -> tuple[plt.Figure | None, str]:
-    """Venn diagram of the publication overlap between sites, for 2 to 6 sites.
+def fig_site_chord(df: pd.DataFrame, site_columns: list[str]) -> go.Figure:
+    """Chord diagram of the publications shared between sites. """
+    if len(site_columns) < 2:
+        return empty_figure("Site Co-authorship (Chord)", "At least two sites are needed for a comparison")
 
-    Returns the figure together with a message, so the caller can say why nothing is drawn
-    instead of guessing a reason. Exactly one of the two is ever filled.
-    """
+    columns = sorted(site_columns, key=lambda column: site_of(column).lower())
+    names   = [site_of(column) for column in columns]
+    count   = len(columns)
+
+    shared = np.zeros((count, count))
+    for i, col_i in enumerate(columns):
+        for j, col_j in enumerate(columns):
+            if i != j:
+                shared[i][j] = int((df[col_i] & df[col_j]).sum())
+
+    totals = shared.sum(axis=1)
+    keep   = [i for i, total in enumerate(totals) if total > 0]
+    if len(keep) < 2:
+        return empty_figure("Site Co-authorship (Chord)",
+                            "No publications are shared between sites in this selection")
+
+    names  = [names[i] for i in keep]
+    shared = shared[np.ix_(keep, keep)]
+    totals = shared.sum(axis=1)
+    count  = len(names)
+
+    # Arc lengths proportional to the totals, with a fixed gap between neighbours
+    gap       = 0.03
+    available = 2 * np.pi * (1 - gap * count)
+    arcs, angle = [], 0.0
+    for total in totals:
+        width = available * total / totals.sum()
+        arcs.append((angle, angle + width))
+        angle += width + 2 * np.pi * gap
+
+    # Each arc is divided among its partners so the bands dock proportionally
+    segments = {}
+    for i in range(count):
+        start = arcs[i][0]
+        span  = arcs[i][1] - arcs[i][0]
+        for j in range(count):
+            if shared[i][j] > 0:
+                width = span * shared[i][j] / totals[i]
+                segments[(i, j)] = (start, start + width)
+                start += width
+
+    def on_circle(start, end, radius, steps=40):
+        angles = np.linspace(start, end, steps)
+        return np.cos(angles) * radius, np.sin(angles) * radius
+
+    def through_centre(point_a, point_b, steps=40):
+        # quadratic Bezier with the origin as control point, which gives the pinched shape
+        t = np.linspace(0, 1, steps)
+        return ((1 - t) ** 2 * point_a[0] + t ** 2 * point_b[0],
+                (1 - t) ** 2 * point_a[1] + t ** 2 * point_b[1])
+
+    radius, thickness = 1.0, 0.08
+    fig = go.Figure()
+
+    # Bands first so the arcs sit on top of them
+    for i in range(count):
+        for j in range(i + 1, count):
+            if shared[i][j] <= 0:
+                continue
+            ax, ay = on_circle(*segments[(i, j)], radius - thickness)
+            bx, by = on_circle(*segments[(j, i)], radius - thickness)
+            c1x, c1y = through_centre((ax[-1], ay[-1]), (bx[0], by[0]))
+            c2x, c2y = through_centre((bx[-1], by[-1]), (ax[0], ay[0]))
+            bigger = i if totals[i] >= totals[j] else j
+            fig.add_scatter(
+                x=np.concatenate([ax, c1x, bx, c2x]),
+                y=np.concatenate([ay, c1y, by, c2y]),
+                fill="toself", mode="lines", line=dict(width=0), opacity=0.45,
+                fillcolor=SITE_COLORS.get(names[bigger], BLUE),
+                hoveron="fills", hoverinfo="text",
+                text=f"{names[i]} and {names[j]}: "
+                     f"{int(shared[i][j]):,} shared publications",
+                showlegend=False,
+            )
+
+    for i, (start, end) in enumerate(arcs):
+        outer_x, outer_y = on_circle(start, end, radius)
+        inner_x, inner_y = on_circle(end, start, radius - thickness)
+        fig.add_scatter(
+            x=np.concatenate([outer_x, inner_x]), y=np.concatenate([outer_y, inner_y]),
+            fill="toself", mode="lines", line=dict(width=0),
+            fillcolor=SITE_COLORS.get(names[i], BLUE),
+            hoveron="fills", hoverinfo="text",
+            text=f"{names[i]}: appears in {int(totals[i]):,} site pairings",
+            showlegend=False,
+        )
+
+        middle = (start + end) / 2
+        fig.add_annotation(
+            x=np.cos(middle) * (radius + 0.15), y=np.sin(middle) * (radius + 0.15),
+            text=f"{names[i]}<br><span style='font-size:9px'>{int(totals[i]):,}</span>",
+            showarrow=False, font=dict(color=TEXT, size=11), align="center",
+        )
+
+    fig.update_layout(**plot_layout(
+        title="Site Co-authorship (Chord)",
+        height=560,
+        xaxis=dict(visible=False, range=[-1.3, 1.3], scaleanchor="y", constrain="domain"),
+        yaxis=dict(visible=False, range=[-1.22, 1.22], constrain="domain"),
+        margin=dict(l=8, r=8, t=40, b=8),
+    ))
+    return fig
+
+
+def fig_site_venn(df: pd.DataFrame, site_columns: list[str]) -> tuple[plt.Figure | None, str]:
+    """Venn diagram of the publication overlap between sites, for 2 to 6 sites. """
     if len(site_columns) < 2:
         return None, "At least two sites are needed for a Venn diagram."
+    # Beyond five sets the shapes overlap so heavily that the diagram is no longer readable,
+    # the heatmap and the chord diagram cover those cases instead
+    if len(site_columns) > MAX_VENN_SITES:
+        return None, (f"A Venn diagram is only readable up to {MAX_VENN_SITES} sites, "
+                      f"this DZG has {len(site_columns)}. Use the chord diagram and the "
+                      "heatmap below instead.")
     try:
         from venn import venn as venn_plot
     except ImportError:
         return None, "Install the venn library to enable the Venn diagram: pip install venn"
 
-    # The venn library supports at most 6 sets, so the largest sites are kept rather than
-    # whichever come first in the CSV, then ordered alphabetically for a predictable layout
-    ranked = sorted(site_columns, key=lambda column: int(df[column].sum()), reverse=True)
-    shown  = sorted(ranked[:6], key=lambda column: site_of(column).lower())
-
+    shown   = sorted(site_columns, key=lambda column: site_of(column).lower())
     sets    = {site_of(column): set(df[df[column]].index) for column in shown}
     palette = [SITE_COLORS.get(site_of(column), BLUE) for column in shown]
 
@@ -799,13 +945,6 @@ def fig_site_venn(df: pd.DataFrame, site_columns: list[str]) -> tuple[plt.Figure
     ax.set_title("Site Co-authorship (Venn)", color=TEXT, fontsize=12, pad=12)
     for text in ax.texts:
         text.set_color(TEXT)
-
-    if len(site_columns) > 6:
-        omitted = [site_of(column) for column in ranked[6:]]
-        ax.set_xlabel(
-            f"Showing the 6 largest of {len(site_columns)} sites. Not shown: {', '.join(omitted)}",
-            color=MUTED, fontsize=8,
-        )
 
     plt.tight_layout()
     return fig, ""
@@ -868,38 +1007,44 @@ SITE_COLORS = resolve_colors(
 )
 
 with st.sidebar:
-    st.markdown(f'<div style="color:{MUTED};font-size:10px;letter-spacing:0.15em;'
-                f'text-transform:uppercase;margin-bottom:4px">Filter</div>',
+    st.markdown('<div style="opacity:0.75;font-size:10px;letter-spacing:0.15em;'
+                'text-transform:uppercase;margin-bottom:4px">Filter</div>',
                 unsafe_allow_html=True)
     st.markdown("---")
 
     # DZG is fixed from the YAML config and shown as info rather than a selector
     st.markdown(
-        f'<div style="color:{MUTED};font-size:10px">Active DZG</div>'
-        f'<div style="color:{TEXT};font-size:16px;font-weight:700;margin-bottom:12px">{selected_dzg}</div>',
+        '<div style="opacity:0.75;font-size:10px">Active DZG</div>'
+        f'<div style="font-size:16px;font-weight:700;margin-bottom:12px">{selected_dzg}</div>',
         unsafe_allow_html=True,
     )
 
     # site-level columns follow the "DZG_site" naming pattern from the data pipeline
     site_columns = get_site_columns(df_articles, selected_dzg)
     sites        = sorted(site_of(column) for column in site_columns)
-    if sites:
-        selected_site = st.selectbox("Site", [SITE_ALL, SITE_NONE] + sites)
-    else:
-        selected_site = SITE_ALL
-
     years_in_data = df_articles["publication_year"].dropna().astype(int)
     year_min = int(years_in_data.min()) if not years_in_data.empty else 2005
     year_max = int(years_in_data.max()) if not years_in_data.empty else 2026
 
-    year_range = st.slider("Time Range", year_min, year_max, (max(year_min, 2010), year_max))
+    # Defaults sit in session state so the reset button can write them back
+    st.session_state.setdefault("site_filter", SITE_ALL)
+    st.session_state.setdefault("year_filter", (year_min, year_max))
+
+    if sites:
+        selected_site = st.selectbox("Site", [SITE_ALL, SITE_NONE] + sites, key="site_filter")
+    else:
+        selected_site = SITE_ALL
+
+    year_range = st.slider("Time Range", year_min, year_max, key="year_filter")
+
+    st.button("Reset Filters", on_click=reset_filters, args=(year_min, year_max), width="stretch")
 
     st.markdown("---")
     st.markdown(
-        f'<div style="color:{MUTED};font-size:10px">Data Extracted<br>'
-        f'<span style="color:{TEXT}">{last_extracted}</span></div>'
-        f'<div style="color:{MUTED};font-size:10px;margin-top:8px">Data Processed<br>'
-        f'<span style="color:{TEXT}">{last_prepared}</span></div>',
+        '<div style="opacity:0.75;font-size:10px">Data Extracted</div>'
+        f'<div style="font-size:10px">{last_extracted}</div>'
+        '<div style="opacity:0.75;font-size:10px;margin-top:8px">Data Processed</div>'
+        f'<div style="font-size:10px">{last_prepared}</div>',
         unsafe_allow_html=True,
     )
 
@@ -928,18 +1073,20 @@ df_mesh_filtered = df_mesh[
     df_mesh["publication_year"].between(year_range[0], year_range[1])
 ] if not df_mesh.empty else df_mesh
 
-# Site columns for the selected DZG (only present if sub-networks are defined in the YAML).
+# Site columns for the selected DZG
 # With the no-site filter active every site chart would be empty, so they are skipped.
 site_cols_filtered = get_site_columns(df_filtered, selected_dzg)
 show_site_charts   = bool(site_cols_filtered) and selected_site != SITE_NONE
 
 # MeSH stoplist and term counts
 mesh_stoplist = load_mesh_stoplist(MESH_STOPLIST_PATH)
-mesh_counts_full = (
+mesh_counts = (
     df_mesh_filtered["mesh_term"].value_counts()
     if not df_mesh_filtered.empty and "mesh_term" in df_mesh_filtered.columns
     else pd.Series(dtype=int)
 )
+# filter out stopwords
+mesh_counts = mesh_counts[~mesh_counts.index.isin(mesh_stoplist)]
 
 # Shared statistics used across tabs
 total_pubs   = len(df_filtered)
@@ -952,8 +1099,8 @@ share_leadership = round(n_leadership / total_pubs * 100, 1) if total_pubs > 0 e
 # Page header
 
 st.markdown(
-    f'<h2 style="color:{TEXT};font-weight:600;margin-bottom:0">Publication Analysis</h2>'
-    f'<div style="color:{MUTED};font-size:12px;margin-bottom:24px">'
+    '<h2 style="font-weight:600;margin-bottom:0">Publication Analysis</h2>'
+    f'<div style="opacity:0.75;font-size:12px;margin-bottom:24px">'
     f'{selected_dzg}{" – " + selected_site if selected_site != SITE_ALL else ""} &nbsp;·&nbsp; '
     f'{year_range[0]}–{year_range[1]} &nbsp;·&nbsp; {format_number(total_pubs)} publications</div>',
     unsafe_allow_html=True,
@@ -980,12 +1127,11 @@ with tab_overview:
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
-    st.plotly_chart(fig_pubs_per_year(df_filtered, df_authors_filtered_dzg, selected_dzg),
-                    width="stretch")
+    show_chart(fig_pubs_per_year(df_filtered, df_authors_filtered_dzg, selected_dzg))
 
     if show_site_charts:
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-        st.plotly_chart(fig_pubs_per_site_year(df_filtered, site_cols_filtered), width="stretch")
+        show_chart(fig_pubs_per_site_year(df_filtered, site_cols_filtered))
         data_note("A publication is counted once for every site involved, so work written jointly by "
                   f"several sites appears in more than one segment and a stacked bar can exceed the "
                   f"real number of publications that year. \"{SITE_NONE}\" covers publications that "
@@ -997,7 +1143,7 @@ with tab_citations:
     info_box("About the Citation Data", """
         Citation counts come from NIH iCite, an open service run by the National Institutes of Health.
         It indexes every article listed in PubMed and recalculates the citation figures on a regular
-        schedule, so each publication in this dashboard is matched to its iCite record by PMID.
+        schedule.
     """)
 
     if has_citations(df_filtered):
@@ -1011,7 +1157,7 @@ with tab_citations:
     kpi(c2, "Average Citations per Publication", format_number(avg_citations, 1))
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-    st.plotly_chart(fig_citations_per_year(df_filtered), width="stretch")
+    show_chart(fig_citations_per_year(df_filtered))
 
     if has_citations(df_filtered):
         st.subheader("Most-Cited Publications")
@@ -1055,13 +1201,12 @@ with tab_journal:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.plotly_chart(fig_sjr_quartile(df_filtered), width="stretch")
+        show_chart(fig_sjr_quartile(df_filtered))
     with col2:
-        st.plotly_chart(fig_sjr_quartile_per_year(df_filtered), width="stretch")
-    data_note("Publications whose journal could not be matched by ISSN are not shown.")
+        show_chart(fig_sjr_quartile_per_year(df_filtered))
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-    st.plotly_chart(fig_sjr_per_year(df_filtered), width="stretch")
+    show_chart(fig_sjr_per_year(df_filtered))
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
     info_box("Definitions", f"""
@@ -1102,11 +1247,18 @@ with tab_collaboration:
         else:
             data_note(venn_message)
 
+        show_chart(fig_site_chord(df_filtered, site_cols_filtered))
+        data_note("In the chord diagram the length of an arc shows how often a site appears "
+                  "together with others, the width of a band shows the shared publications of "
+                  "that pair. ")
+
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
         col1, col2 = st.columns(2)
         with col1:
-            st.plotly_chart(fig_sites_per_article(df_filtered, site_cols_filtered), width="stretch")
+            show_chart(fig_sites_per_article(df_filtered, site_cols_filtered))
         with col2:
-            st.plotly_chart(fig_site_heatmap(df_filtered, site_cols_filtered), width="stretch")
+            show_chart(fig_site_heatmap(df_filtered, site_cols_filtered))
         data_note("The heatmap diagonal shows each site's own total and stays outside the colour scale "
                   "so the shared counts between different sites remain distinguishable.")
 
@@ -1114,39 +1266,30 @@ with tab_collaboration:
 
     # Section 2: other DZGs
     st.markdown('<div class="section-label">Collaboration with Other DZGs</div>', unsafe_allow_html=True)
-    st.plotly_chart(fig_co_affiliation(df_filtered, selected_dzg), width="stretch")
+    show_chart(fig_co_affiliation(df_filtered, selected_dzg))
 
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
     # Section 3: team size
     st.markdown('<div class="section-label">Team Size</div>', unsafe_allow_html=True)
-    st.plotly_chart(fig_authors_per_article_year(df_filtered), width="stretch")
+    show_chart(fig_authors_per_article_year(df_filtered))
     data_note("Includes all authors on each publication, not only DZG-affiliated authors.")
 
 # Tab: MeSH Terms
 
 with tab_mesh:
     info_box("About MeSH Terms", """
-        MeSH data is pre-processed during data preparation and stored in pubmed_mesh.csv.<br>
-        Non-specific terms such as <i>Humans</i>, <i>Male</i> or <i>Female</i> can be hidden
-        via the stoplist defined in <code>mesh_stoplist.yaml</code>.
+        MeSH data is stored in pubmed_mesh.csv.<br>
+        Non-specific terms such as <i>Humans</i>, <i>Male</i> or <i>Female</i> are removed
+        throughout, based on the stoplist in <code>mesh_stoplist.yaml</code>.
     """)
 
-    if mesh_counts_full.empty:
+    if mesh_counts.empty:
         st.info("No MeSH data available, re-run 02_preprocessing.py to generate pubmed_mesh.csv.")
     else:
-        filter_stopwords = st.checkbox(
-            f"Hide non-specific terms ({len(mesh_stoplist)} terms in stoplist from mesh_stoplist.yaml)",
-            value=True,
-        )
-        mesh_counts = (
-            mesh_counts_full[~mesh_counts_full.index.isin(mesh_stoplist)]
-            if filter_stopwords else mesh_counts_full
-        )
-
         top_n_mesh = st.slider("Number of top terms to display", min_value=5, max_value=50,
                                value=20, step=5)
-        st.plotly_chart(fig_mesh_top_n(mesh_counts, top_n_mesh), width="stretch")
+        show_chart(fig_mesh_top_n(mesh_counts, top_n_mesh))
 
         st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
@@ -1155,11 +1298,10 @@ with tab_mesh:
         top_100_terms = mesh_counts.head(100).index.tolist()
         selected_terms = st.multiselect(
             "Select MeSH terms to track over time (top 100 shown):",
-            options=top_100_terms,
+            options=sorted(top_100_terms),
             default=top_100_terms[:5],
         )
-        st.plotly_chart(fig_mesh_trend(df_mesh_filtered, selected_terms), width="stretch")
-        data_note("Only publications with MeSH descriptors assigned by PubMed are included.")
+        show_chart(fig_mesh_trend(df_mesh_filtered, selected_terms))
 
 
 # Tab: Author Search
@@ -1171,33 +1313,26 @@ with tab_authors:
         one term in one paper and another term in a second paper still appears.
     """)
 
-    if mesh_counts_full.empty:
+    if mesh_counts.empty:
         st.info("No MeSH data available, re-run 02_preprocessing.py to generate pubmed_mesh.csv.")
+    elif "author_key" not in df_authors_filtered_dzg.columns:
+        st.warning("The author file carries no author_key column yet, so authors cannot be "
+                   "grouped. That column is written by 02_preprocessing.py, please run that "
+                   "step once and reload this page.")
     else:
-        hide_generic = st.checkbox(
-            "Hide non-specific terms in the list below", value=True, key="author_search_stoplist"
-        )
-        offered = (mesh_counts_full[~mesh_counts_full.index.isin(mesh_stoplist)]
-                   if hide_generic else mesh_counts_full)
-
         chosen_terms = st.multiselect(
-            "MeSH terms, combined with AND",
-            options=offered.index.tolist(),
+            "MeSH terms",
+            options=sorted(mesh_counts.index.tolist()),
             help="An author has to have published on every selected term, not necessarily "
                  "within the same publication.",
             key="author_search_terms",
-        )
-        leading_only = st.checkbox(
-            "Only first or last author",
-            value=False,
-            key="author_search_leading",
         )
 
         if not chosen_terms:
             st.info("Select at least one MeSH term to search for.")
         else:
             found_authors, found_publications, author_links = authors_by_mesh(
-                df_mesh_filtered, df_authors_filtered_dzg, df_filtered, chosen_terms, leading_only
+                df_mesh_filtered, df_authors_filtered_dzg, df_filtered, chosen_terms
             )
 
             if found_authors.empty:
@@ -1209,27 +1344,22 @@ with tab_authors:
                            f"{format_number(len(found_publications))} publications. "
                            "Select a row to narrow the publications below to that author.")
 
-                # The key carries the chosen terms, so a new search starts without an old
-                # row still being selected
+                shown_authors = found_authors.drop(columns=["author_key"])
                 selection = st.dataframe(
-                    found_authors,
+                    shown_authors,
                     width="stretch",
                     hide_index=True,
                     on_select="rerun",
                     selection_mode="single-row",
-                    key=f"author_table_{'_'.join(sorted(chosen_terms))}_{leading_only}",
-                    column_order=[c for c in found_authors.columns if c != "author_key"],
+                    key=f"author_table_{'_'.join(sorted(chosen_terms))}",
+                    column_order=[c for c in shown_authors.columns if c not in ("From", "To")],
                     column_config={
-                        "Publications":            st.column_config.NumberColumn(format="%d"),
-                        "As first or last author": st.column_config.NumberColumn(format="%d"),
-                        "From":                    st.column_config.NumberColumn(format="%d"),
-                        "To":                      st.column_config.NumberColumn(format="%d"),
+                        column: st.column_config.NumberColumn(format="%d")
+                        for column in ["Publications", "Cumulative Citations",
+                                       "As first or last author", "From", "To", *chosen_terms]
                     },
                 )
-                data_note("Authors are identified by last name and initials, because PubMed "
-                          "carries no reliable author identifier. Namesakes therefore share a "
-                          "row, and one person can appear twice when a publisher abbreviates "
-                          "the name differently. The ORCID helps to tell the cases apart.")
+                data_note("Authors are identified by last name and initials.")
 
                 chosen_rows = selection.selection.rows if selection else []
                 if chosen_rows:
@@ -1296,11 +1426,12 @@ with tab_data:
         else:
             # Rendering every row of a large table is slow and rarely useful, so the
             # preview is capped while the download still covers the full selection
-            PREVIEW_ROWS = 1000
+            PREVIEW_ROWS = 100
             st.dataframe(
                 df_view.head(PREVIEW_ROWS),
                 width="stretch",
                 hide_index=True,
+                column_order=raw_column_order(df_view, table_choice, selected_dzg),
                 column_config=table_column_config(df_view),
             )
             if len(df_view) > PREVIEW_ROWS:
@@ -1309,7 +1440,7 @@ with tab_data:
 
             suffix = "filtered" if apply_filters else "full"
             st.download_button(
-                "Download as CSV",
+                "Download complete data as CSV",
                 data=df_view.to_csv(index=False, sep=";").encode("utf-8-sig"),
                 file_name=f"{selected_dzg.lower()}_{file_stem}_{suffix}.csv",
                 mime="text/csv",

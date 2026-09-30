@@ -1,29 +1,37 @@
 """
-Grammar of the search terms in dzg_search_terms.yaml.
+search terms are safed in dzg_search_terms.yaml.
 
 A term is normally matched as written, anywhere in the affiliation and ignoring case.
-Two markers at the start of a term change that:
+Three markers at the start of a term change that:
 
   {noorder}   every word after the marker has to occur somewhere in the affiliation,
               in any order.
 
-  {nosearch}  the term is not sent to PubMed and never proves membership in the DZG.
-              Use it for wording that is too general, which would return many unrelated articles. 
+  {nosearch}  the term is not used for the search in PubMed because it doesn`t proof membership in the DZG.
+              Use it for wording that is too general, which would return many unrelated articles.
               It only fills the site column.
+
+  {regex}     the rest of the entry is a regular expression, matched ignoring case. Use it
+              when a site is only recognisable from the wording around it, such as an anchor
+              word next to a city name. PubMed cannot search with a pattern, so the term
+              behaves like {nosearch} and fills the site column only. Combining it with
+              {noorder} is rejected.
 """
 
+import re
 from typing import NamedTuple
 
 import pandas as pd
 
-KNOWN_MARKERS = {"noorder", "nosearch"}
+KNOWN_MARKERS = {"noorder", "nosearch", "regex"}
 
 
 class SearchTerm(NamedTuple):
     """One entry of a search term list, with its markers already read."""
 
-    words: list[str]   # all of these have to occur in the affiliation
-    searchable: bool   # False for {nosearch}, which limits the term to the site column
+    words: list[str]            # all of these have to occur, empty for a pattern
+    pattern: re.Pattern | None  # set for {regex}, then words is empty
+    searchable: bool            # whether the term may be sent to PubMed
 
 
 def parse_term(raw: str) -> SearchTerm:
@@ -49,13 +57,24 @@ def parse_term(raw: str) -> SearchTerm:
     if not text:
         raise ValueError(f"Search term {raw!r} has markers but no words to search for")
 
+    if "regex" in markers:
+        if "noorder" in markers:
+            raise ValueError(f"Search term {raw!r} combines {{regex}} with {{noorder}}. "
+                             "Splitting a pattern at its spaces would break it.")
+        try:
+            pattern = re.compile(text, re.IGNORECASE)
+        except re.error as error:
+            raise ValueError(f"Search term {raw!r} is not a valid regular expression: {error}")
+        return SearchTerm(words=[], pattern=pattern, searchable=False)
+
     words = text.split() if "noorder" in markers else [text]
-    return SearchTerm(words=words, searchable="nosearch" not in markers)
+    return SearchTerm(words=words, pattern=None, searchable="nosearch" not in markers)
 
 
 def dzg_terms(networks: dict) -> list[str]:
     """Collect the terms of one DZG that identify the DZG itself.
-    Runs over the general block and every site block. {nosearch} terms are skipped.
+    Runs over the general block and every site block. {nosearch} and {regex} terms are
+    skipped.
     """
     terms = []
     for network in networks.values():
@@ -84,17 +103,23 @@ def build_query(networks: dict) -> str:
 
 def affiliation_matches(affiliations: pd.Series, terms: list[str]) -> pd.Series:
     """Mark the affiliations that match any of the search terms.
-    A term matches when all of its words occur in the affiliation, ignoring case.
+    A plain term matches when all of its words occur in the affiliation, a {regex} term
+    when its pattern is found anywhere. Both ignore case.
     """
-    word_groups = []
+    word_groups, patterns = [], []
     for raw in terms:
-        word_groups.append([word.lower() for word in parse_term(raw).words])
+        term = parse_term(raw)
+        if term.pattern is not None:
+            patterns.append(term.pattern)
+        else:
+            word_groups.append([word.lower() for word in term.words])
 
     def matches_any_term(affiliation: str) -> bool:
-        text = str(affiliation).lower()
+        original = str(affiliation)
+        lowered = original.lower()
         for words in word_groups:
-            if all(word in text for word in words):
+            if all(word in lowered for word in words):
                 return True
-        return False
+        return any(pattern.search(original) for pattern in patterns)
 
     return affiliations.apply(matches_any_term)
